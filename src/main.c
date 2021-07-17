@@ -1,9 +1,8 @@
 #include <stdio.h>
+#include <stdlib.h>
 
-// declares a global array of 2048 characters
-// this can be accessed in any part of the program
-// `static` makes this variable local to this file
-static char input[2048];
+#include <editline/readline.h>
+
 
 int main(int argc, char** argv) {
   puts("Tashima-LISP Version 0.0.0.0.1");
@@ -12,12 +11,12 @@ int main(int argc, char** argv) {
   // infinite loop `while (true)`
   while (1) {
     // variation of puts that does not append a new line character
-    fputs("t-lisp> ", stdout);
+    char *input = readline("t-list> ");
 
-    // gets user input from the therminal
-    fgets(input, 2048, stdin);
+    add_history(input);
 
-    printf("No you're a %s", input);
+    printf("indeed, %s\n", input);
+    free(input);
   }
 
   return 0;
