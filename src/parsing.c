@@ -48,7 +48,7 @@ void lval_print(lval v) {
     
     case LVAL_ERR:
       if(v.err == LERR_DIV_ZERO) {
-        printf("Error: Division by Zero!");
+        printf("Error: Division or Modulo by Zero!");
       }
       if(v.err == LERR_BAD_OP) {
         printf("Error: Invalid Operator!");
@@ -73,6 +73,11 @@ lval eval_op(lval x, char *op, lval y) {
     return y.num == 0
       ? lval_err(LERR_DIV_ZERO)
       : lval_num(x.num / y.num); 
+  }
+  if(strcmp(op, "%") == 0) { 
+    return y.num == 0
+      ? lval_err(LERR_DIV_ZERO)
+      : lval_num(x.num % y.num); 
   }
   return lval_err(LERR_BAD_OP);
 }
