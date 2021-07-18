@@ -19,6 +19,8 @@ void add_history(char *unused) {}
 #include <editline/readline.h>
 #endif
 
+enum { LVAL_ERR, LVAL_NUM, LVAL_SYM, LVAL_SEXPR };
+
 typedef struct lval {
   int type;
   long num;
@@ -28,32 +30,38 @@ typedef struct lval {
   struct lval **cell;
 } lval;
 
-enum { LVAL_ERR, LVAL_NUM, LVAL_SYM, LVAL_SEXPR };
-enum { LERR_DIV_ZERO, LERR_BAD_OP, LERR_BAD_NUM };
-
+/* constructors */
 lval *lval_num(long x);
 lval *lval_err(char *m);
 lval *lval_sym(char *s);
 lval *lval_sexpr(void);
+
+/* destructors */
 void lval_del(lval *v);
+
+/* mutators */
 lval *lval_add(lval *v, lval *x);
-lval *lval_read_num(mpc_ast_t *t);
-lval *lval_read(mpc_ast_t *t);
+lval *lval_pop(lval *v, int i);
+lval *lval_take(lval *v, int i);
+
+/* printers */
 void lval_expr_print(lval *v, char open, char close);
 void lval_print(lval *v);
 void lval_println(lval *v); 
-lval eval_op(lval x, char *op, lval y);
-lval * lval_eval_sexpr(lval *v);
-lval *lval_eval(lval *v); 
-lval *lval_pop(lval *v, int i);
-lval *lval_take(lval *v, int i);
+
+/* evaluators */
 lval *builtin_op(lval *a, char *op);
-lval eval(mpc_ast_t *t);
+lval *lval_eval_sexpr(lval *v);
+lval *lval_eval(lval *v);
+
+/* readers */
+lval *lval_read_num(mpc_ast_t *t);
+lval *lval_read(mpc_ast_t *t);
 
 int main(/*int argc, char** argv*/) {
   mpc_parser_t* Number   = mpc_new("number");
-  mpc_parser_t* Operator = mpc_new("symbol");
-  mpc_parser_t* Sexpr     = mpc_new("sexpr");
+  mpc_parser_t* Symbol = mpc_new("symbol");
+  mpc_parser_t* Sexpr    = mpc_new("sexpr");
   mpc_parser_t* Expr     = mpc_new("expr");
   mpc_parser_t* Lispy    = mpc_new("lispy");
 
@@ -62,10 +70,10 @@ int main(/*int argc, char** argv*/) {
         number   : /-?[0-9]+/ ;                            \
         symbol   : '+' | '-' | '*' | '/' ;                 \
         sexpr    : '(' <expr>* ')' ;                       \
-        expr     : <number> | <symbol> | <expr> ;          \
+        expr     : <number> | <symbol> | <sexpr> ;         \
         lispy    : /^/ <expr>* /$/ ;                       \
       ",
-      Number, Operator, Sexpr, Expr, Lispy);
+      Number, Symbol, Sexpr, Expr, Lispy);
 
   puts("Tashima-LISP Version 0.0.0.0.1");
   puts("Press CTRL+c to Exit");
@@ -80,7 +88,7 @@ int main(/*int argc, char** argv*/) {
     // try to parse the input
     if(mpc_parse("<stdin>", input, Lispy, &r)) {
       // if success, print the AST and delete
-      lval *x = lval_read(r.output);
+      lval *x = lval_eval(lval_read(r.output));
       lval_println(x);
       lval_del(x);
       mpc_ast_delete(r.output);
@@ -93,10 +101,11 @@ int main(/*int argc, char** argv*/) {
     free(input);
   }
 
-  mpc_cleanup(5, Number, Operator, Sexpr, Expr, Lispy);
+  mpc_cleanup(5, Number, Symbol, Sexpr, Expr, Lispy);
 
   return 0;
 }
+
 
 lval *lval_num(long x) {
   lval *v = malloc(sizeof(lval));
@@ -149,43 +158,27 @@ void lval_del(lval *v) {
 lval *lval_add(lval *v, lval *x) {
   v->count++;
   v->cell = realloc(v->cell, sizeof(lval*) * v->count);
-  v->cell[v->count - 1] = x;
+  v->cell[v->count-1] = x;
   return v;
 }
 
-lval *lval_read_num(mpc_ast_t *t) {
-  errno = 0;
-  long x = strtol(t->contents, NULL, 10);
-  return errno != ERANGE ?
-    lval_num(x) : lval_err("Invalid number");
-}
+lval *lval_pop(lval *v, int i) {
+  lval *x = v->cell[i];
+  
+  memmove(&v->cell[i], &v->cell[i+1],
+      sizeof(lval*) * (v->count-i-1));
 
-lval *lval_read(mpc_ast_t *t) {
-  if(strstr(t->tag, "Number")) { return lval_read_num(t); }
-  if(strstr(t->tag, "symbol")) { return lval_sym(t->contents); }
+  v->count--;
 
-  lval *x = NULL;
-  if(strcmp(t->tag, ">") == 0) { x = lval_sexpr(); }
-  if(strcmp(t->tag, "sexpr")) { x = lval_sexpr(); }
-
-  for(int i = 0; i < t->children_num; i++) {
-    if(strcmp(t->children[i]->contents, "(") == 0) { continue; }
-    if(strcmp(t->children[i]->contents, ")") == 0) { continue; }
-    if(strcmp(t->children[i]->tag, "regex") == 0) { continue; }
-    x = lval_add(x, lval_read(t->children[i]));
-  }
-
+  v->cell = realloc(v->cell, sizeof(lval*) * v->count);
+  
   return x;
 }
 
-
-void lval_print(lval *v) {
-  switch (v->type) {
-    case LVAL_NUM: printf("%li", v->num); break;
-    case LVAL_ERR: printf("Error: %s", v->err); break;
-    case LVAL_SYM: printf("%s", v->sym); break;
-    case LVAL_SEXPR: lval_expr_print(v, '(', ')'); break;
-  }
+lval *lval_take(lval *v, int i) {
+  lval *x = lval_pop(v, i);
+  lval_del(v);
+  return x;
 }
 
 void lval_expr_print(lval *v, char open, char close) {
@@ -200,9 +193,55 @@ void lval_expr_print(lval *v, char open, char close) {
   putchar(close);
 }
 
-void lval_println(lval *v) { lval_print(v); putchar('\n'); }
+void lval_print(lval *v) {
+  switch (v->type) {
+    case LVAL_NUM: printf("%li", v->num); break;
+    case LVAL_ERR: printf("Error: %s", v->err); break;
+    case LVAL_SYM: printf("%s", v->sym); break;
+    case LVAL_SEXPR: lval_expr_print(v, '(', ')'); break;
+  }
+}
 
-lval * lval_eval_sexpr(lval *v) {
+void lval_println(lval *v) { 
+  lval_print(v); 
+  putchar('\n'); 
+}
+
+lval *builtin_op(lval *a, char *op) {
+  for(int i = 0; i < a->count; i++) {
+    if(a->cell[i]->type != LVAL_NUM) {
+      lval_del(a);
+      return lval_err("Cannot operate on non-number!");
+    }
+  }
+
+  lval *x = lval_pop(a, 0);
+
+  if((strcmp(op, "-") == 0) && a->count == 0) {
+    x->num = -x->num;
+  }
+
+  while(a->count > 0) {
+    lval *y = lval_pop(a, 0);
+
+    if(strcmp(op, "+") == 0) { x->num += y->num; }
+    if(strcmp(op, "-") == 0) { x->num -= y->num; }
+    if(strcmp(op, "*") == 0) { x->num *= y->num; }
+    if(strcmp(op, "/") == 0) { 
+      if(y->num == 0) {
+        lval_del(x); lval_del(y);
+        x = lval_err("Division By Zero!"); 
+        break;
+      }
+      x->num /= y->num; 
+    }
+    lval_del(y);
+  }
+  lval_del(a); 
+  return x;
+}
+
+lval *lval_eval_sexpr(lval *v) {
   for(int i = 0; i < v->count; i++) {
     v->cell[i] = lval_eval(v->cell[i]);
   }
@@ -231,53 +270,28 @@ lval *lval_eval(lval *v) {
   return v;
 }
 
-lval *lval_pop(lval *v, int i) {
-  lval *x = v->cell[i];
-  
-  memmove(&v->cell[i], &v->cell[i+1],
-      sizeof(lval*) * (v->count-i-1));
-
-  v->count--;
-
-  v->cell = realloc(v->cell, sizeof(lval*) * v->count);
-  
-  return x;
+lval *lval_read_num(mpc_ast_t *t) {
+  errno = 0;
+  long x = strtol(t->contents, NULL, 10);
+  return errno != ERANGE ?
+    lval_num(x) : lval_err("Invalid number");
 }
 
-lval * lval_take(lval *v, int i) {
-  lval *x = lval_pop(v, i);
-  lval_del(v);
+lval *lval_read(mpc_ast_t *t) {
+  if(strstr(t->tag, "number")) { return lval_read_num(t); }
+  if(strstr(t->tag, "symbol")) { return lval_sym(t->contents); }
+
+  lval *x = NULL;
+  if(strcmp(t->tag, ">") == 0) { x = lval_sexpr(); }
+  if(strcmp(t->tag, "sexpr")) { x = lval_sexpr(); }
+
+  for(int i = 0; i < t->children_num; i++) {
+    if(strcmp(t->children[i]->contents, "(") == 0) { continue; }
+    if(strcmp(t->children[i]->contents, ")") == 0) { continue; }
+    if(strcmp(t->children[i]->tag, "regex") == 0) { continue; }
+    x = lval_add(x, lval_read(t->children[i]));
+  }
+
   return x;
-}
-
-lval *builtin_op(lval *a, char *op) {
-  for(int i = 0; i < a->count; i++) {
-    if(a->cell[i]->type != LVAL_NUM) {
-      lval_del(a);
-      return lval_err("Cannot operate on non-number!");
-    }
-  }
-
-  lval *x = lval_pop(a, 0);
-
-  if((strcmp(op, "-") == 0) && a->count == 0) {
-    x->num = -x->num;
-  }
-
-  while(a->count > 0) {
-    lval *y = lval_pop(a, 0);
-
-    if(strcmp(op, "+") == 0) { x->num += y->num; }
-    if(strcmp(op, "-") == 0) { x->num -= y->num; }
-    if(strcmp(op, "*") == 0) { x->num *= y->num; }
-    if(strcmp(op, "/") == 0) { 
-      if(y->num == 0) {
-        lval_del(x); lval_del(x);
-        x = lval_err("Division By Zero!"); break;
-      }
-      x->num /= y->num; 
-    }
-  }
-  lval_del(a); return x;
 }
 
